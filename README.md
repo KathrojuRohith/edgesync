@@ -61,4 +61,4 @@ The single-node development manifest is in `deploy/k8s`. The Helm chart is in `h
 
 Run `go test ./...`, `go test -race ./...`, `go vet ./...`, and the documented fault scenarios in [docs/FAULT_INJECTION.md](docs/FAULT_INJECTION.md). Record real benchmark output in [docs/BENCHMARK_REPORT.md](docs/BENCHMARK_REPORT.md); no performance numbers are claimed until measured.
 
-This is an educational prototype, not a production-certified database. Raft snapshots and dynamic membership are not implemented. Review consistency, crash recovery, security, access control, backups, observability and resource limits before any production use.
+This is an educational prototype, not a production-certified database. The current API and Raft RPC use HTTP/JSON; gRPC/protobuf transport is not implemented. Request-ID deduplication is in-memory and does not survive process restart. Raft snapshots and dynamic membership are not implemented. Review consistency, crash recovery, security, access control, backups, observability and resource limits before any production use. See [implementation status](docs/IMPLEMENTATION_STATUS.md) for the precise scope.
