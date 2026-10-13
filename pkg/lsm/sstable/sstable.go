@@ -1,0 +1,26 @@
+// Package sstable implements immutable sorted string tables with a sparse index and Bloom filter.
+package sstable
+
+import(
+ "bufio";"bytes";"encoding/binary";"errors";"io";"os";"sort"
+ "edgesync/pkg/lsm/bloom";"edgesync/pkg/lsm/entry"
+)
+const(magic uint64=0x4544474553594e43;footerSize=32;indexEvery=16)
+var errCorrupt=errors.New("sstable: corrupt file")
+type indexEntry struct{key []byte;off uint64}
+type Writer struct{f *os.File;bw *bufio.Writer;off uint64;count uint64;index []indexEntry;filter *bloom.Filter;last []byte;started bool;err error}
+func NewWriter(path string,expected int)(*Writer,error){f,e:=os.OpenFile(path,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,0644);if e!=nil{return nil,e};return &Writer{f:f,bw:bufio.NewWriterSize(f,64<<10),filter:bloom.New(expected)},nil}
+func(w *Writer)write(p []byte){if w.err!=nil{return};n,e:=w.bw.Write(p);w.off+=uint64(n);w.err=e}
+func(w *Writer)Add(e entry.Entry)error{if w.started&&bytes.Compare(e.Key,w.last)<=0{return errors.New("sstable: keys out of order")};w.started=true;if w.count%indexEvery==0{w.index=append(w.index,indexEntry{append([]byte(nil),e.Key...),w.off})};var h [8]byte;binary.LittleEndian.PutUint32(h[:4],uint32(len(e.Key)));vl:=int32(len(e.Value));if e.Deleted{vl=-1};binary.LittleEndian.PutUint32(h[4:],uint32(vl));w.write(h[:]);w.write(e.Key);if !e.Deleted{w.write(e.Value)};w.filter.Add(e.Key);w.count++;w.last=append(w.last[:0],e.Key...);return w.err}
+func(w *Writer)finish()error{indexOff:=w.off;var b [8]byte;binary.LittleEndian.PutUint32(b[:4],uint32(len(w.index)));w.write(b[:4]);for _,ie:=range w.index{binary.LittleEndian.PutUint32(b[:4],uint32(len(ie.key)));w.write(b[:4]);w.write(ie.key);binary.LittleEndian.PutUint64(b[:],ie.off);w.write(b[:])};bloomOff:=w.off;w.write(w.filter.Marshal());var foot [footerSize]byte;binary.LittleEndian.PutUint64(foot[:],indexOff);binary.LittleEndian.PutUint64(foot[8:],bloomOff);binary.LittleEndian.PutUint64(foot[16:],w.count);binary.LittleEndian.PutUint64(foot[24:],magic);w.write(foot[:]);if w.err!=nil{return w.err};if e:=w.bw.Flush();e!=nil{return e};return w.f.Sync()}
+func(w *Writer)Finish()error{e:=w.finish();if c:=w.f.Close();e==nil{e=c};return e}
+func(w *Writer)Abort(){_=w.f.Close()}
+type Table struct{f *os.File;index []indexEntry;filter *bloom.Filter;dataEnd uint64;count uint64}
+func Open(path string)(*Table,error){f,e:=os.Open(path);if e!=nil{return nil,e};t,e:=open(f);if e!=nil{_=f.Close();return nil,e};return t,nil}
+func open(f *os.File)(*Table,error){st,e:=f.Stat();if e!=nil{return nil,e};size:=uint64(st.Size());if size<footerSize{return nil,errCorrupt};var foot [footerSize]byte;if _,e=f.ReadAt(foot[:],int64(size-footerSize));e!=nil{return nil,e};ioff:=binary.LittleEndian.Uint64(foot[:]);boff:=binary.LittleEndian.Uint64(foot[8:]);count:=binary.LittleEndian.Uint64(foot[16:]);if binary.LittleEndian.Uint64(foot[24:])!=magic||ioff>boff||boff>size-footerSize{return nil,errCorrupt};meta:=make([]byte,size-footerSize-ioff);if _,e=f.ReadAt(meta,int64(ioff));e!=nil{return nil,e};idx:=meta[:boff-ioff];if len(idx)<4{return nil,errCorrupt};n:=int(binary.LittleEndian.Uint32(idx));pos:=4;index:=make([]indexEntry,0,n);for i:=0;i<n;i++{if pos+4>len(idx){return nil,errCorrupt};kl:=int(binary.LittleEndian.Uint32(idx[pos:]));pos+=4;if pos+kl+8>len(idx){return nil,errCorrupt};key:=append([]byte(nil),idx[pos:pos+kl]...);pos+=kl;off:=binary.LittleEndian.Uint64(idx[pos:]);pos+=8;index=append(index,indexEntry{key,off})};filter,e:=bloom.Unmarshal(meta[boff-ioff:]);if e!=nil{return nil,e};return &Table{f:f,index:index,filter:filter,dataEnd:ioff,count:count},nil}
+func(t *Table)Close()error{return t.f.Close()}
+func(t *Table)Count()uint64{return t.count}
+func(t *Table)Get(key []byte)([]byte,bool,bool,error){if !t.filter.MayContain(key){return nil,false,false,nil};i:=sort.Search(len(t.index),func(i int)bool{return bytes.Compare(t.index[i].key,key)>0})-1;if i<0{return nil,false,false,nil};start:=t.index[i].off;end:=t.dataEnd;if i+1<len(t.index){end=t.index[i+1].off};buf:=make([]byte,end-start);if _,e:=t.f.ReadAt(buf,int64(start));e!=nil{return nil,false,false,e};pos:=0;for pos+8<=len(buf){kl:=int(binary.LittleEndian.Uint32(buf[pos:]));vl:=int32(binary.LittleEndian.Uint32(buf[pos+4:]));pos+=8;if pos+kl>len(buf){return nil,false,false,errCorrupt};k:=buf[pos:pos+kl];pos+=kl;var v []byte;if vl>=0{if pos+int(vl)>len(buf){return nil,false,false,errCorrupt};v=buf[pos:pos+int(vl)];pos+=int(vl)};switch c:=bytes.Compare(k,key);{case c==0:if vl<0{return nil,true,true,nil};return append([]byte{},v...),true,false,nil;case c>0:return nil,false,false,nil}};return nil,false,false,nil}
+type Iterator struct{r *bufio.Reader;remaining uint64}
+func(t *Table)Iter()*Iterator{return &Iterator{r:bufio.NewReaderSize(io.NewSectionReader(t.f,0,int64(t.dataEnd)),64<<10),remaining:t.count}}
+func(it *Iterator)Next()(entry.Entry,bool,error){if it.remaining==0{return entry.Entry{},false,nil};var h [8]byte;if _,e:=io.ReadFull(it.r,h[:]);e!=nil{return entry.Entry{},false,e};kl:=int(binary.LittleEndian.Uint32(h[:4]));vl:=int32(binary.LittleEndian.Uint32(h[4:]));en:=entry.Entry{Key:make([]byte,kl)};if _,e:=io.ReadFull(it.r,en.Key);e!=nil{return entry.Entry{},false,e};if vl<0{en.Deleted=true}else{en.Value=make([]byte,vl);if _,e:=io.ReadFull(it.r,en.Value);e!=nil{return entry.Entry{},false,e}};it.remaining--;return en,true,nil}
