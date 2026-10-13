@@ -1,6 +1,6 @@
 BIN_DIR := bin
 CMDS := edgesync faultctl bench checker
-.PHONY: all build test race vet fmt bench serve cluster-up cluster-down cluster-status loadtest durability docker compose-up clean
+.PHONY: all build test race vet fmt run bench serve cluster-up cluster-down cluster-status loadtest durability docker compose-up clean
 all: fmt vet test build
 build:
 	@mkdir -p $(BIN_DIR)
@@ -12,19 +12,20 @@ race:
 vet:
 	go vet ./...
 fmt:
-	gofmt -l -w .
-bench:
-	go test -run '^$$' -bench . -benchmem ./pkg/...
-serve: build
+	gofmt -w $$(find . -name '*.go' -type f)
+run: build
 	./$(BIN_DIR)/edgesync -http :8080 -data ./data/solo -seed
+serve: run
+bench: build
+	go test -run '^$$' -bench . -benchmem ./pkg/...
 cluster-up: build
 	./scripts/cluster.sh start
 cluster-down:
 	./scripts/cluster.sh stop
 cluster-status: build
-	./$(BIN_DIR)/faultctl status
+	./scripts/cluster.sh status
 loadtest: build
-	./$(BIN_DIR)/bench -addrs localhost:8081,localhost:8082,localhost:8083 -clients 32 -duration 20s -csv results.csv -label local3
+	./$(BIN_DIR)/bench -addr http://localhost:8081 -clients 32 -duration 20s -csv results.csv
 durability: build
 	./$(BIN_DIR)/checker -duration 40s
 docker:
