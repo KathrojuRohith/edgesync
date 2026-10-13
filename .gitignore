@@ -1,0 +1,7 @@
+bin/
+coverage.out
+*.prof
+*.test
+docs/baseline/
+data/
+web/node_modules/
