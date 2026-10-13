@@ -1,73 +1,19 @@
+// Command edgesync is the EdgeSync node.
 package main
 
 import (
-	"context"
-	"flag"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"path/filepath"
-	"syscall"
-	"time"
-
-	"edgesync/internal/raftkv"
-	"edgesync/internal/web"
-	"edgesync/pkg/kv"
-	"edgesync/pkg/lsm"
+ "bufio";"context";"flag";"fmt";"log";"net/http";_ "net/http/pprof";"os";"os/signal";"path/filepath";"runtime";"strings";"syscall";"time"
+ "edgesync/internal/raft";"edgesync/internal/raftkv";"edgesync/internal/web";"edgesync/pkg/kv";"edgesync/pkg/lsm"
 )
-
-func main() {
-	addr := flag.String("http", "", "HTTP listen address (for example :8080)")
-	dataDir := flag.String("data", "./data/solo", "directory for durable data")
-	seed := flag.Bool("seed", false, "start this node as a Raft cluster seed")
-	id := flag.String("id", "node-1", "node ID")
-	peers := flag.String("peers", "", "comma-separated Raft peer addresses")
-	flag.Parse()
-
-	var store kv.Store
-	if *seed || *peers != "" || *addr != "" {
-		if err := os.MkdirAll(*dataDir, 0o755); err != nil {
-			log.Fatalf("create data directory: %v", err)
-		}
-		engine, err := lsm.Open(filepath.Clean(*dataDir))
-		if err != nil {
-			log.Fatalf("open LSM engine: %v", err)
-		}
-		defer engine.Close()
-		cluster, err := raftkv.NewCluster(*id, *addr, *peers, engine)
-		if err != nil {
-			log.Fatalf("create cluster: %v", err)
-		}
-		store = cluster
-	} else {
-		store = kv.NewMemoryStore()
-	}
-
-	if *addr != "" {
-		srv := &http.Server{
-			Addr:              *addr,
-			Handler:           web.NewServer(store),
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-		done := make(chan os.Signal, 1)
-		signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
-		go func() {
-			<-done
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = srv.Shutdown(ctx)
-		}()
-		log.Printf("EdgeSync node %s listening on %s", *id, *addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server: %v", err)
-		}
-		return
-	}
-
-	if err := runREPL(store); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+func parsePeers(s string)(ids []string,addrs map[string]string,err error){addrs=map[string]string{};for _,part:=range strings.Split(s,","){id,addr,ok:=strings.Cut(strings.TrimSpace(part),"=");if !ok||id==""||addr==""{return nil,nil,fmt.Errorf("bad peer %q, want id=host:port",part)};ids=append(ids,id);addrs[id]=addr};return ids,addrs,nil}
+func main(){
+ nodeID:=flag.String("id","node-1","node identifier");pprofAdr:=flag.String("pprof","127.0.0.1:6060","pprof listen address, empty to disable");httpAddr:=flag.String("http","","serve console and API on this address, e.g. :8080 (empty = REPL)");seedData:=flag.Bool("seed",false,"load demo logistics data");dataDir:=flag.String("data","","data directory; enables LSM engine");peersFlag:=flag.String("peers","","all members as id=host:port,... (enables Raft)");syncWrites:=flag.Bool("sync",true,"fsync the WAL on every write");memtableMB:=flag.Int("memtable-mb",4,"memtable flush threshold in MiB");electMin:=flag.Duration("election-min",300*time.Millisecond,"minimum election timeout");electMax:=flag.Duration("election-max",600*time.Millisecond,"maximum election timeout");heartbeat:=flag.Duration("heartbeat",75*time.Millisecond,"leader heartbeat interval");flag.Parse()
+ if *pprofAdr!=""{go func(){log.Printf("pprof on http://%s/debug/pprof/",*pprofAdr);if err:=http.ListenAndServe(*pprofAdr,nil);err!=nil{log.Printf("pprof stopped: %v",err)}}()}
+ var store kv.Store=kv.NewMemoryStore();var eng *lsm.Engine;var node *raft.Node
+ if *dataDir!=""{var err error;eng,err=lsm.Open(lsm.Options{Dir:filepath.Join(*dataDir,"lsm"),MemtableBytes:*memtableMB<<20,SyncWrites:*syncWrites});if err!=nil{log.Fatalf("open engine: %v",err)};store=eng}
+ mux:=http.NewServeMux();var cluster web.Cluster=web.SingleNode{ID:*nodeID};var fwd web.Forwarder;served:=store
+ if *peersFlag!=""{if *dataDir==""{log.Fatal("-peers requires -data")};ids,addrs,err:=parsePeers(*peersFlag);if err!=nil{log.Fatal(err)};var others []string;for _,id:=range ids{if id!=*nodeID{others=append(others,id)}};if _,ok:=addrs[*nodeID];!ok{log.Fatalf("-id %q is not listed in -peers",*nodeID)};tr:=raft.NewHTTPTransport(*nodeID,addrs);rs:=raftkv.New(store);node,err=raft.New(raft.Config{ID:*nodeID,Peers:others,Transport:tr,DataDir:filepath.Join(*dataDir,"raft"),Apply:rs.Apply,ElectionMin:*electMin,ElectionMax:*electMax,Heartbeat:*heartbeat});if err!=nil{log.Fatalf("start raft: %v",err)};rs.Attach(node);view:=&raftkv.ClusterView{Node:node,Tr:tr,IDs:ids};mux.Handle("/raft/",tr.Handler(node));served,cluster,fwd=rs,view,view}else if *seedData{web.Seed(store)}
+ if *httpAddr==""{defer served.Close();fmt.Printf("EdgeSync %s (REPL)\ncommands: PUT k v | GET k | DELETE k | SCAN prefix [limit] | EXIT\n",*nodeID);sc:=bufio.NewScanner(os.Stdin);for{fmt.Print("edgesync> ");if !sc.Scan()||execute(served,sc.Text()){break}};return}
+ api:=web.New(served,cluster);if fwd!=nil{api.SetForwarder(fwd)};api.SetMetrics(func()map[string]float64{m:=map[string]float64{};var ms runtime.MemStats;runtime.ReadMemStats(&ms);m["go_goroutines"]=float64(runtime.NumGoroutine());m["go_heap_alloc_bytes"]=float64(ms.HeapAlloc);if eng!=nil{st:=eng.Stats();m["lsm_memtable_bytes"]=float64(st.MemtableBytes);m["lsm_sstables"]=float64(st.Tables);m["lsm_flushes_total"]=float64(st.Flushes);m["lsm_compactions_total"]=float64(st.Compactions)};if node!=nil{st:=node.Status();m["raft_term"]=float64(st.Term);m["raft_commit_index"]=float64(st.CommitIndex);m["raft_last_applied"]=float64(st.LastApplied);m["raft_leader_changes_total"]=float64(st.LeaderChanges);if st.Role=="leader"{m["raft_is_leader"]=1}else{m["raft_is_leader"]=0}};return m});mux.Handle("/",api.Handler())
+ srv:=&http.Server{Addr:*httpAddr,Handler:mux};ctx,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM);defer stop();go func(){log.Printf("EdgeSync %s listening on %s",*nodeID,*httpAddr);if err:=srv.ListenAndServe();err!=nil&&err!=http.ErrServerClosed{log.Fatal(err)}}();<-ctx.Done();log.Printf("shutting down");shutdown,cancel:=context.WithTimeout(context.Background(),5*time.Second);defer cancel();_=srv.Shutdown(shutdown);_=served.Close()
 }
