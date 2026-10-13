@@ -19,11 +19,11 @@ serve: run
 bench: build
 	go test -run '^$$' -bench . -benchmem ./pkg/...
 cluster-up: build
-	./scripts/cluster.sh start
+	bash scripts/cluster.sh start
 cluster-down:
-	./scripts/cluster.sh stop
+	bash scripts/cluster.sh stop
 cluster-status: build
-	./scripts/cluster.sh status
+	bash scripts/cluster.sh status
 loadtest: build
 	./$(BIN_DIR)/bench -addr http://localhost:8081 -clients 32 -duration 20s -csv results.csv
 durability: build
