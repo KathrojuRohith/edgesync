@@ -31,6 +31,7 @@ func(s *Server)home(w http.ResponseWriter,r *http.Request){
  _,_=fmt.Fprint(w,"<!doctype html><html><head><title>EdgeSync</title></head><body><h1>EdgeSync Console</h1><p>Storage API is online.</p><a href=\"/healthz\">Health</a> · <a href=\"/metrics\">Metrics</a></body></html>")
 }
 type mutation struct {Key string;Value string}
+type requestIDStore interface { PutID(string, []byte, []byte) error; DeleteID(string, []byte) error }
 func(s *Server)kvHandler(w http.ResponseWriter,r *http.Request){
  s.requests.Add(1)
  switch r.Method {
@@ -38,7 +39,7 @@ func(s *Server)kvHandler(w http.ResponseWriter,r *http.Request){
   var m mutation
   if err:=json.NewDecoder(http.MaxBytesReader(w,r.Body,1<<20)).Decode(&m);err!=nil{writeErr(w,400,err);return}
   if strings.TrimSpace(m.Key)==""{writeErr(w,400,kv.ErrEmptyKey);return}
-  if err:=s.store.Put([]byte(m.Key),[]byte(m.Value));err!=nil{writeErr(w,500,err);return}
+  var putErr error; if ids,ok:=s.store.(requestIDStore);ok&&r.Header.Get("X-Request-ID")!="" { putErr=ids.PutID(r.Header.Get("X-Request-ID"),[]byte(m.Key),[]byte(m.Value)) } else { putErr=s.store.Put([]byte(m.Key),[]byte(m.Value)) }; if putErr!=nil{writeErr(w,500,putErr);return}
   writeJSON(w,200,map[string]any{"ok":true,"key":m.Key})
  case http.MethodGet:
   key:=r.URL.Query().Get("key");value,err:=s.store.Get([]byte(key))
@@ -46,7 +47,7 @@ func(s *Server)kvHandler(w http.ResponseWriter,r *http.Request){
   writeJSON(w,200,map[string]string{"key":key,"value":string(value)})
  case http.MethodDelete:
   key:=r.URL.Query().Get("key");if key==""{writeErr(w,400,kv.ErrEmptyKey);return}
-  if err:=s.store.Delete([]byte(key));err!=nil{writeErr(w,500,err);return};writeJSON(w,200,map[string]any{"ok":true,"key":key})
+  var delErr error; if ids,ok:=s.store.(requestIDStore);ok&&r.Header.Get("X-Request-ID")!="" { delErr=ids.DeleteID(r.Header.Get("X-Request-ID"),[]byte(key)) } else { delErr=s.store.Delete([]byte(key)) }; if delErr!=nil{writeErr(w,500,delErr);return};writeJSON(w,200,map[string]any{"ok":true,"key":key})
  default:w.Header().Set("Allow","GET, PUT, DELETE");writeErr(w,405,errors.New("method not allowed"))
  }
 }
