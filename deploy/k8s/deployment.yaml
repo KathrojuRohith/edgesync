@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edgesync
+  namespace: edgesync
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edgesync
+  template:
+    metadata:
+      labels:
+        app: edgesync
+    spec:
+      containers:
+        - name: edgesync
+          image: edgesync:dev
+          imagePullPolicy: IfNotPresent
+          args: ["-http", ":8080", "-data", "/data", "-seed"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: edgesync-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: edgesync-data
+  namespace: edgesync
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
